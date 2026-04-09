@@ -1,30 +1,55 @@
 library(tidyverse)
 library(cowplot)
 
-ex_start <- as.Date("2001-07-18")
-seeds_nuts <- read_csv("data/Nuts.csv") |>
-  mutate(date = as.Date(as.character(date), format = "%Y%m%d"),
-         day_of_ex = date - ex_start)
+ex_start <- as_date("2001-07-18")
+# seeds_nuts <- read_csv("data/Nuts.csv") |>
+#   mutate(date = as.Date(as.character(date), format = "%Y%m%d"),
+#          day_of_ex = date - ex_start)
+#
+# head(seeds_nuts)
 
-head(seeds_nuts)
+linear_interpolate <- function(x, y) {
+  mask <- !is.na(x) & !is.na(y)
+  x2 <- x[mask]
+  y2 <- y[mask]
+  approx(x2, y2, xout = x)$y
+}
 
-seeds_underway <- read_csv("data/Underway.csv",
-                           na = c("nd", "lt 0.20")) |>
-  mutate(date = as.Date(as.character(date), format = "%Y%m%d"),
-         datetime = as.POSIXct(paste(date, time_local_JST),
-                               format = "%Y-%m-%d %H%M"),
-         day_of_ex = date - ex_start) |>
+#
+
+seeds_underway <- read_csv("data/Underway.csv", na = "nd") |>
+  mutate(datetime = as_datetime(paste(date, time_local_JST),
+                                format = "%Y%m%d %H%M",
+                                tz = "Asia/Tokyo"),
+         date = as_date(datetime),
+         day_of_ex = date - ex_start,
+         Diss_Fe = parse_number(ifelse(Diss_Fe == "lt 0.20", 0, Diss_Fe)))
+
+# One of these columns (SF6, Diss_Fe, NO3, Chl_a) has an outlier that's probably
+# due to an instrument malfunction. Create histograms to identify it, then use
+# filter() to remove it.
+ggplot(seeds_underway, aes(SF6)) +
+  geom_histogram()
+ggplot(seeds_underway, aes(Diss_Fe)) +
+  geom_histogram()
+ggplot(seeds_underway, aes(NO3)) +
+  geom_histogram()
+ggplot(seeds_underway, aes(Chl_a)) +
+  geom_histogram()
+
+# Remove one outlier Fe measurement
+seeds_underway <- filter(seeds_underway, Diss_Fe < 15)
+
+# Inside the patch is "defined as >50% of the peak SF6 levels on that day"
+# Outside the patch is "defined as SF6 <3 fM"
+#
+seeds_underway <- seeds_underway |>
   group_by(day_of_ex) |>
-  mutate(sf6_interp = approx(x = datetime[!is.na(SF6)],
-                             y = SF6[!is.na(SF6)],
-                             xout = datetime,
-                             method = "linear")$y,
+  mutate(sf6_interp = linear_interpolate(x = datetime, y = SF6),
          patch = case_when(sf6_interp < 3 ~ "Out",
                            sf6_interp > max(SF6, na.rm = TRUE) / 2 ~ "In",
                            .default = "Edge")) |>
   ungroup()
-# Remove one outlier Fe measurement
-seeds_underway$Diss_Fe[seeds_underway$Diss_Fe > 15] <- NA
 
 seeds_underway_summary <- seeds_underway |>
   drop_na(patch) |>
@@ -94,4 +119,7 @@ chla_plot <- ggplot(seeds_underway_summary,
 
 plot_grid(sf6_plot, fe_plot, no3_plot, chla_plot,
           byrow = FALSE,
-          nrow = 2)
+          nrow = 2,
+          align = "v")
+ggsave("figs/tsuda2003fig2.png",
+       height = 4, width = 6, units = "in")
